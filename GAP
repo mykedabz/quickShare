@@ -1,16 +1,12 @@
-const base = Xrm.Utility.getGlobalContext().getClientUrl() + "/api/data/v9.2/";
-const H2 = { Accept: "application/json", "OData-Version": "4.0", "OData-MaxVersion": "4.0", "Content-Type": "application/json" };
-const team = (await (await fetch(base + "teams?$select=teamid,name&$filter=name eq 'AD-PP-SS-94180-EDM-PRD-BasicUser'", { headers: H2 })).json()).value[0];
-async function teamCount() {
-  let n = 0, url = `${base}teams(${team.teamid})/teammembership_association?$select=systemuserid`;
-  while (url) { const j = await (await fetch(url, { headers: { ...H2, Prefer: "odata.maxpagesize=5000" } })).json(); n += j.value.length; url = j["@odata.nextLink"]; }
-  return n;
+const page = async (url, f) => { while (url) { const j = await (await fetch(url, { headers: { ...H2, Prefer: "odata.maxpagesize=5000" } })).json(); j.value.forEach(f); url = j["@odata.nextLink"]; } };
+const ids = new Set(), members = new Set();
+await page(`${base}edm_srotrackers?$select=_edm_executive_value,_edm_recordowner_value&$filter=statecode eq 0`,
+  t => [t._edm_executive_value, t._edm_recordowner_value].forEach(i => i && ids.add(i)));
+await page(`${base}teams(${team.teamid})/teammembership_association?$select=systemuserid`, u => members.add(u.systemuserid));
+const needCheck = [];
+for (const id of [...ids].filter(i => !members.has(i))) {
+  const u = await (await fetch(`${base}systemusers(${id})?$select=fullname,domainname,isdisabled`, { headers: H2 })).json();
+  if (!u.isdisabled) needCheck.push({ name: u.fullname, email: u.domainname });
 }
-console.log("In team before:", await teamCount(), "· sync started", new Date().toLocaleTimeString());
-const t0 = Date.now();
-const r = await fetch(`${base}teams(${team.teamid})/Microsoft.Dynamics.CRM.SyncGroupMembersToTeam`, { method: "POST", headers: H2, body: "{}" });
-console.log("Sync:", r.status, `${Math.round((Date.now() - t0) / 1000)}s`, r.ok ? "" : (await r.text()).slice(0, 800));
-console.log("In team after:", await teamCount());
-
-
-//console.log(await teamCount())
+console.log(`Executives/record owners on active trackers: ${ids.size} · not in team: ${needCheck.length}`);
+console.table(needCheck);
