@@ -1,3 +1,31 @@
 const base = Xrm.Utility.getGlobalContext().getClientUrl() + "/api/data/v9.2/";
 const H2 = { Accept: "application/json", "OData-Version": "4.0", "OData-MaxVersion": "4.0" };
 const team = (await (await fetch(base + "teams?$select=teamid,name&$filter=name eq 'AD-PP-SS-94180-EDM-PRD-BasicUser'", { headers: H2 })).json()).value[0];
+
+
+(async () => {
+  if (typeof base === "undefined" || typeof team === "undefined") return console.warn("Reload lost base/team: rerun the first 3 lines of the sync script (base, H2, team) first.");
+  const hdr = { Accept: "application/json", "OData-Version": "4.0", "OData-MaxVersion": "4.0", Prefer: "odata.maxpagesize=5000" };
+  const page = async (url, f) => { while (url) { const r = await fetch(url, { headers: hdr }); const j = await r.json();
+    if (!r.ok) throw new Error(r.status + " " + JSON.stringify(j.error).slice(0, 300)); j.value.forEach(f); url = j["@odata.nextLink"]; } };
+
+  const ids = new Set(), members = new Set();
+  await page(`${base}edm_srotrackers?$select=_edm_executive_value,_edm_recordowner_value&$filter=statecode eq 0`,
+    t => [t._edm_executive_value, t._edm_recordowner_value].forEach(i => i && ids.add(i)));
+  console.log(`1/3 Executives/record owners on active trackers: ${ids.size}`);
+
+  await page(`${base}teams(${team.teamid})/teammembership_association?$select=systemuserid`, u => members.add(u.systemuserid));
+  const out = [...ids].filter(i => !members.has(i));
+  console.log(`2/3 In team: ${members.size} · approvers not in team: ${out.length} · looking up names…`);
+
+  const rows = [];
+  for (let i = 0; i < out.length; i += 50) {
+    const f = out.slice(i, i + 50).map(id => `systemuserid eq ${id}`).join(" or ");
+    await page(`${base}systemusers?$select=fullname,domainname,isdisabled&$filter=${encodeURIComponent(f)}`,
+      u => { if (!u.isdisabled) rows.push({ name: u.fullname, email: u.domainname }); });
+    console.log(`   ${Math.min(i + 50, out.length)} / ${out.length}`);
+  }
+  window.needCheck = rows.sort((a, b) => a.name.localeCompare(b.name));
+  console.log(`3/3 Enabled approvers not in team: ${rows.length}`);
+  console.table(window.needCheck);
+})();
