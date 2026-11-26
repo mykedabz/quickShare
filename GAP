@@ -1,86 +1,13 @@
 const base = Xrm.Utility.getGlobalContext().getClientUrl() + "/api/data/v9.2/";
-const H = { Accept: "application/json", "OData-Version": "4.0", "OData-MaxVersion": "4.0",
-            "Content-Type": "application/json", Prefer: "odata.maxpagesize=5000" };
-async function all(path) {
-  const out = []; let url = base + path;
-  while (url) {
-    const r = await fetch(url, { headers: H });
-    if (!r.ok) throw new Error(r.status + " " + (await r.text()).slice(0, 300));
-    const j = await r.json(); out.push(...j.value); url = j["@odata.nextLink"];
-  }
-  return out;
+const H2 = { Accept: "application/json", "OData-Version": "4.0", "OData-MaxVersion": "4.0", "Content-Type": "application/json" };
+const team = (await (await fetch(base + "teams?$select=teamid,name&$filter=name eq 'AD-PP-SS-94180-EDM-PRD-BasicUser'", { headers: H2 })).json()).value[0];
+async function teamCount() {
+  let n = 0, url = `${base}teams(${team.teamid})/teammembership_association?$select=systemuserid`;
+  while (url) { const j = await (await fetch(url, { headers: { ...H2, Prefer: "odata.maxpagesize=5000" } })).json(); n += j.value.length; url = j["@odata.nextLink"]; }
+  return n;
 }
-const team = (await all("teams?$select=teamid,name&$filter=name eq 'AD-PP-SS-94180-EDM-PRD-BasicUser'"))[0];
-async function gap() {
-  const members = new Set((await all(`teams(${team.teamid})/teammembership_association?$select=systemuserid`)).map(u => u.systemuserid));
-  const users = await all("systemusers?$select=systemuserid,fullname&$filter=isdisabled eq false and accessmode eq 0 and applicationid eq null");
-  const missing = users.filter(u => !members.has(u.systemuserid));
-  console.log(`In team: ${members.size} · enabled users: ${users.length} · enabled users NOT in team: ${missing.length}`);
-  return missing;
-}
-let missing = await gap();
-
-//
+console.log("In team before:", await teamCount(), "· sync started", new Date().toLocaleTimeString());
 const t0 = Date.now();
-const r = await fetch(`${base}teams(${team.teamid})/Microsoft.Dynamics.CRM.SyncGroupMembersToTeam`, { method: "POST", headers: H, body: "{}" });
-console.log(r.status, `${Math.round((Date.now() - t0) / 1000)}s`, r.ok ? "" : (await r.text()).slice(0, 500));
-
-// Step 3
-const H2 = { Accept: "application/json", "OData-Version": "4.0", "OData-MaxVersion": "4.0" };  // no paging header
-
-async function inGroup2(id) {
-  const u = await (await fetch(`${base}systemusers(${id})?$select=fullname,azureactivedirectoryobjectid`, { headers: H2 })).json();
-  const r = await fetch(`${base}RetrieveAadUserRoles(DirectoryObjectId=@d)?@d=${u.azureactivedirectoryobjectid}`, { headers: H2 });
-  const body = r.ok ? await r.json() : null;
-  return { id, name: u.fullname, status: r.status, inGroup: !!body && JSON.stringify(body).includes(team.teamid),
-           error: r.ok ? "" : (await r.text()).slice(0, 200) };
-}
-
-// Random people from the missing list, stopping at the first 10 who are in the group (max 200 checks)
-const pool = [...missing].sort(() => Math.random() - 0.5);
-const sample = [], tried = [];
-for (const m of pool) {
-  if (sample.length >= 10 || tried.length >= 200) break;
-  const c = await inGroup2(m.systemuserid); tried.push(c);
-  if (c.status !== 200 && tried.filter(t => t.status !== 200).length >= 3) { console.warn("Stopping: 3 errors", c.error); break; }
-  if (c.inGroup) sample.push(c);
-}
-console.log(`Checked ${tried.length}; in the group: ${sample.length} (${Math.round(100 * sample.length / tried.length)}%)`);
-console.table(sample);
-console.table(tried.filter(c => c.status !== 200));
-
-// Setp 4
-for (const t of sample) {
-  const u = await Xrm.WebApi.retrieveRecord("systemuser", t.id, "?$select=fullname&$expand=teammembership_association($select=teamid)");
-  t.inTeamNow = u.teammembership_association.some(x => x.teamid === team.teamid);
-}
-console.table(sample.map(t => ({ name: t.name, inTeamNow: t.inTeamNow })));
-
-
-// Step 5
-const crId = "aa9983a7-bae2-f111-84e8-000d3a0c3f67"; // RRT-00006773-CR1, the record the access checks run against
-const calls = {
-  PrincipalAccess: id => `systemusers(${id})/Microsoft.Dynamics.CRM.RetrievePrincipalAccess(Target=@t)?@t=` +
-                         encodeURIComponent(JSON.stringify({ "@odata.id": `edm_srochangerequests(${crId})` })),
-  UserPrivileges:  id => `systemusers(${id})/Microsoft.Dynamics.CRM.RetrieveUserPrivileges`,
-  AccessOrigin:    id => `RetrieveAccessOrigin(ObjectId=@o,LogicalName=@l,PrincipalId=@p)?@o=${crId}&@l=` +
-                         encodeURIComponent("'edm_srochangerequest'") + `&@p=${id}`,
-};
-const plan = ["PrincipalAccess","PrincipalAccess","PrincipalAccess","UserPrivileges","UserPrivileges","UserPrivileges",
-              "AccessOrigin","AccessOrigin","AccessOrigin","ALL"];
-for (let i = 0; i < sample.length; i++) {
-  const t = sample[i]; t.call = plan[i];
-  for (const name of (t.call === "ALL" ? Object.keys(calls) : [t.call])) {
-    const r = await fetch(base + calls[name](t.id), { headers: H2 });
-    t[name] = r.status;
-    if (!r.ok) console.warn(t.name, name, r.status, (await r.text()).slice(0, 200));
-  }
-}
-console.table(sample.map(t => ({ name: t.name, call: t.call, PrincipalAccess: t.PrincipalAccess, UserPrivileges: t.UserPrivileges, AccessOrigin: t.AccessOrigin })));
-
-// Step 6
-for (const t of sample) {
-  const u = await Xrm.WebApi.retrieveRecord("systemuser", t.id, "?$select=fullname&$expand=teammembership_association($select=teamid)");
-  t.inTeamNow = u.teammembership_association.some(x => x.teamid === team.teamid);
-}
-console.table(sample.map(t => ({ name: t.name, call: t.call, inTeamNow: t.inTeamNow })));
+const r = await fetch(`${base}teams(${team.teamid})/Microsoft.Dynamics.CRM.SyncGroupMembersToTeam`, { method: "POST", headers: H2, body: "{}" });
+console.log("Sync:", r.status, `${Math.round((Date.now() - t0) / 1000)}s`, r.ok ? "" : (await r.text()).slice(0, 800));
+console.log("In team after:", await teamCount());
