@@ -1,12 +1,3 @@
-const page = async (url, f) => { while (url) { const j = await (await fetch(url, { headers: { ...H2, Prefer: "odata.maxpagesize=5000" } })).json(); j.value.forEach(f); url = j["@odata.nextLink"]; } };
-const ids = new Set(), members = new Set();
-await page(`${base}edm_srotrackers?$select=_edm_executive_value,_edm_recordowner_value&$filter=statecode eq 0`,
-  t => [t._edm_executive_value, t._edm_recordowner_value].forEach(i => i && ids.add(i)));
-await page(`${base}teams(${team.teamid})/teammembership_association?$select=systemuserid`, u => members.add(u.systemuserid));
-const needCheck = [];
-for (const id of [...ids].filter(i => !members.has(i))) {
-  const u = await (await fetch(`${base}systemusers(${id})?$select=fullname,domainname,isdisabled`, { headers: H2 })).json();
-  if (!u.isdisabled) needCheck.push({ name: u.fullname, email: u.domainname });
-}
-console.log(`Executives/record owners on active trackers: ${ids.size} · not in team: ${needCheck.length}`);
-console.table(needCheck);
+const base = Xrm.Utility.getGlobalContext().getClientUrl() + "/api/data/v9.2/";
+const H2 = { Accept: "application/json", "OData-Version": "4.0", "OData-MaxVersion": "4.0" };
+const team = (await (await fetch(base + "teams?$select=teamid,name&$filter=name eq 'AD-PP-SS-94180-EDM-PRD-BasicUser'", { headers: H2 })).json()).value[0];
