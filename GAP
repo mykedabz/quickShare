@@ -11,3 +11,6 @@ const t0 = Date.now();
 const r = await fetch(`${base}teams(${team.teamid})/Microsoft.Dynamics.CRM.SyncGroupMembersToTeam`, { method: "POST", headers: H2, body: "{}" });
 console.log("Sync:", r.status, `${Math.round((Date.now() - t0) / 1000)}s`, r.ok ? "" : (await r.text()).slice(0, 800));
 console.log("In team after:", await teamCount());
+
+
+//console.log(await teamCount())
