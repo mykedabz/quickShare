@@ -1,0 +1,7 @@
+﻿Table,Internal name,Create,Read,Write,Delete,Append,Append To,Assign,Share
+DRR,edm_applicationrepository,-,-,User,-,-,-,-,-
+DRR Attestation,edm_drrattestation,-,User,User,-,User,-,-,-
+DRR Event Tracker,edm_drreventtracker,User,-,-,-,-,-,-,-
+DRR Stakeholder,edm_drrstakeholder,User,Organization,-,Organization,-,-,-,-
+EDI,edm_imt,-,-,User,-,-,-,-,-
+LOB1,edm_lob1,User,-,-,-,-,-,-,-
