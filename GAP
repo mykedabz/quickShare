@@ -24,3 +24,31 @@ let missing = await gap();
 const t0 = Date.now();
 const r = await fetch(`${base}teams(${team.teamid})/Microsoft.Dynamics.CRM.SyncGroupMembersToTeam`, { method: "POST", headers: H, body: "{}" });
 console.log(r.status, `${Math.round((Date.now() - t0) / 1000)}s`, r.ok ? "" : (await r.text()).slice(0, 500));
+
+//
+// Is this person in the Entra group behind the team? RetrieveAadUserRoles lists roles that come through Entra groups.
+async function inGroup(id) {
+  const u = await (await fetch(`${base}systemusers(${id})?$select=fullname,azureactivedirectoryobjectid`, { headers: H })).json();
+  const r = await fetch(`${base}RetrieveAadUserRoles(DirectoryObjectId=@d)?@d=${u.azureactivedirectoryobjectid}`, { headers: H });
+  const body = r.ok ? await r.json() : null;
+  return { id, name: u.fullname, status: r.status, inGroup: !!body && JSON.stringify(body).includes(team.teamid) };
+}
+
+// Random people from the missing list, stopping at the first 10 who are in the group (max 200 checks)
+const shuffled = [...missing].sort(() => Math.random() - 0.5);
+const test = [], checked = [];
+for (const m of shuffled) {
+  if (test.length >= 10 || checked.length >= 200) break;
+  const c = await inGroup(m.systemuserid); checked.push(c);
+  if (c.inGroup) test.push(c);
+}
+console.log(`Checked ${checked.length}; in the group: ${test.length} (${Math.round(100 * test.length / checked.length)}%)`);
+console.table(test);
+console.table(checked.filter(c => c.status !== 200));   // anything that errored
+
+//
+for (const t of test) {
+  const u = await Xrm.WebApi.retrieveRecord("systemuser", t.id, "?$select=fullname&$expand=teammembership_association($select=teamid)");
+  t.inTeamNow = u.teammembership_association.some(x => x.teamid === team.teamid);
+}
+console.table(test.map(t => ({ name: t.name, inTeamNow: t.inTeamNow })));
