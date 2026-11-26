@@ -55,3 +55,32 @@ for (const t of sample) {
   t.inTeamNow = u.teammembership_association.some(x => x.teamid === team.teamid);
 }
 console.table(sample.map(t => ({ name: t.name, inTeamNow: t.inTeamNow })));
+
+
+// Step 5
+const crId = "aa9983a7-bae2-f111-84e8-000d3a0c3f67"; // RRT-00006773-CR1, the record the access checks run against
+const calls = {
+  PrincipalAccess: id => `systemusers(${id})/Microsoft.Dynamics.CRM.RetrievePrincipalAccess(Target=@t)?@t=` +
+                         encodeURIComponent(JSON.stringify({ "@odata.id": `edm_srochangerequests(${crId})` })),
+  UserPrivileges:  id => `systemusers(${id})/Microsoft.Dynamics.CRM.RetrieveUserPrivileges`,
+  AccessOrigin:    id => `RetrieveAccessOrigin(ObjectId=@o,LogicalName=@l,PrincipalId=@p)?@o=${crId}&@l=` +
+                         encodeURIComponent("'edm_srochangerequest'") + `&@p=${id}`,
+};
+const plan = ["PrincipalAccess","PrincipalAccess","PrincipalAccess","UserPrivileges","UserPrivileges","UserPrivileges",
+              "AccessOrigin","AccessOrigin","AccessOrigin","ALL"];
+for (let i = 0; i < sample.length; i++) {
+  const t = sample[i]; t.call = plan[i];
+  for (const name of (t.call === "ALL" ? Object.keys(calls) : [t.call])) {
+    const r = await fetch(base + calls[name](t.id), { headers: H2 });
+    t[name] = r.status;
+    if (!r.ok) console.warn(t.name, name, r.status, (await r.text()).slice(0, 200));
+  }
+}
+console.table(sample.map(t => ({ name: t.name, call: t.call, PrincipalAccess: t.PrincipalAccess, UserPrivileges: t.UserPrivileges, AccessOrigin: t.AccessOrigin })));
+
+// Step 6
+for (const t of sample) {
+  const u = await Xrm.WebApi.retrieveRecord("systemuser", t.id, "?$select=fullname&$expand=teammembership_association($select=teamid)");
+  t.inTeamNow = u.teammembership_association.some(x => x.teamid === team.teamid);
+}
+console.table(sample.map(t => ({ name: t.name, call: t.call, inTeamNow: t.inTeamNow })));
