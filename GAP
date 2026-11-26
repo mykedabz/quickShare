@@ -1,0 +1,26 @@
+const base = Xrm.Utility.getGlobalContext().getClientUrl() + "/api/data/v9.2/";
+const H = { Accept: "application/json", "OData-Version": "4.0", "OData-MaxVersion": "4.0",
+            "Content-Type": "application/json", Prefer: "odata.maxpagesize=5000" };
+async function all(path) {
+  const out = []; let url = base + path;
+  while (url) {
+    const r = await fetch(url, { headers: H });
+    if (!r.ok) throw new Error(r.status + " " + (await r.text()).slice(0, 300));
+    const j = await r.json(); out.push(...j.value); url = j["@odata.nextLink"];
+  }
+  return out;
+}
+const team = (await all("teams?$select=teamid,name&$filter=name eq 'AD-PP-SS-94180-EDM-PRD-BasicUser'"))[0];
+async function gap() {
+  const members = new Set((await all(`teams(${team.teamid})/teammembership_association?$select=systemuserid`)).map(u => u.systemuserid));
+  const users = await all("systemusers?$select=systemuserid,fullname&$filter=isdisabled eq false and accessmode eq 0 and applicationid eq null");
+  const missing = users.filter(u => !members.has(u.systemuserid));
+  console.log(`In team: ${members.size} · enabled users: ${users.length} · enabled users NOT in team: ${missing.length}`);
+  return missing;
+}
+let missing = await gap();
+
+//
+const t0 = Date.now();
+const r = await fetch(`${base}teams(${team.teamid})/Microsoft.Dynamics.CRM.SyncGroupMembersToTeam`, { method: "POST", headers: H, body: "{}" });
+console.log(r.status, `${Math.round((Date.now() - t0) / 1000)}s`, r.ok ? "" : (await r.text()).slice(0, 500));
