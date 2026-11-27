@@ -1,31 +1,125 @@
-const base = Xrm.Utility.getGlobalContext().getClientUrl() + "/api/data/v9.2/";
-const H2 = { Accept: "application/json", "OData-Version": "4.0", "OData-MaxVersion": "4.0" };
-const team = (await (await fetch(base + "teams?$select=teamid,name&$filter=name eq 'AD-PP-SS-94180-EDM-PRD-BasicUser'", { headers: H2 })).json()).value[0];
+// Demo items for DRR attestation, made without running a flow or sending email.
+//
+// Use: open the EDM Tools app in CIBC DEV or UAT (not PRD), press F12 › Console, paste this whole file, then run
+//   await demoAttestations.create()   // Pending items for you, so your My Attestations page has something to show
+//   await demoAttestations.remove()   // clean up afterwards
+//
+// Items are tagged with cycle "DEMO" so they never mix with a real cycle, and the start flow's duplicate check
+// ignores them. You need Create on DRR Attestation (DRRAppAdmin, EDMAdmin or System Customizer).
+var demoAttestations = (() => {
+  const CYCLE = "DEMO";
+  const MAX = 6;            // how many items to make
+  const DEADLINE_DAYS = 60;
+  const PENDING = 784940000, WITHDRAWN = 784940003;
+  // Used only if you hold no stakeholder roles here. Two Data Stewards so the role filter has something to show.
+  const FALLBACK_ROLES = ["Data Steward", "Data Owner", "Data Steward", "Data Custodian", "Lead Data Steward", "Spoke Segment Lead"];
 
+  const me = () => Xrm.Utility.getGlobalContext().userSettings.userId.replace(/[{}]/g, "").toLowerCase();
+  const day = (offset) => { const d = new Date(); d.setDate(d.getDate() + offset); return d.toLocaleDateString("en-CA"); };
+  const fetchRows = (table, xml) => Xrm.WebApi.retrieveMultipleRecords(table, "?fetchXml=" + encodeURIComponent(xml)).then(r => r.entities);
 
-(async () => {
-  if (typeof base === "undefined" || typeof team === "undefined") return console.warn("Reload lost base/team: rerun the first 3 lines of the sync script (base, H2, team) first.");
-  const hdr = { Accept: "application/json", "OData-Version": "4.0", "OData-MaxVersion": "4.0", Prefer: "odata.maxpagesize=5000" };
-  const page = async (url, f) => { while (url) { const r = await fetch(url, { headers: hdr }); const j = await r.json();
-    if (!r.ok) throw new Error(r.status + " " + JSON.stringify(j.error).slice(0, 300)); j.value.forEach(f); url = j["@odata.nextLink"]; } };
-
-  const ids = new Set(), members = new Set();
-  await page(`${base}edm_srotrackers?$select=_edm_executive_value,_edm_recordowner_value&$filter=statecode eq 0`,
-    t => [t._edm_executive_value, t._edm_recordowner_value].forEach(i => i && ids.add(i)));
-  console.log(`1/3 Executives/record owners on active trackers: ${ids.size}`);
-
-  await page(`${base}teams(${team.teamid})/teammembership_association?$select=systemuserid`, u => members.add(u.systemuserid));
-  const out = [...ids].filter(i => !members.has(i));
-  console.log(`2/3 In team: ${members.size} · approvers not in team: ${out.length} · looking up names…`);
-
-  const rows = [];
-  for (let i = 0; i < out.length; i += 50) {
-    const f = out.slice(i, i + 50).map(id => `systemuserid eq ${id}`).join(" or ");
-    await page(`${base}systemusers?$select=fullname,domainname,isdisabled&$filter=${encodeURIComponent(f)}`,
-      u => { if (!u.isdisabled) rows.push({ name: u.fullname, email: u.domainname }); });
-    console.log(`   ${Math.min(i + 50, out.length)} / ${out.length}`);
+  // Your own active stakeholder rows, so the items look real and the daily follow-up flow leaves them alone.
+  async function myRoles() {
+    const rows = await fetchRows("edm_drrstakeholder", `
+      <fetch top="${MAX}">
+        <entity name="edm_drrstakeholder">
+          <attribute name="edm_drrstakeholderid" /><attribute name="edm_role" /><attribute name="edm_applicationrepository" />
+          <filter>
+            <condition attribute="statecode" operator="eq" value="0" />
+            <condition attribute="edm_systemuser" operator="eq" value="${me()}" />
+            <condition attribute="edm_role" operator="not-null" />
+          </filter>
+          <link-entity name="edm_applicationrepository" from="edm_applicationrepositoryid" to="edm_applicationrepository" alias="a">
+            <attribute name="edm_drrnumber" />
+          </link-entity>
+          <order attribute="createdon" descending="true" />
+        </entity>
+      </fetch>`);
+    return rows.map(r => ({
+      stakeholderId: r.edm_drrstakeholderid,
+      drrId: r._edm_applicationrepository_value,
+      drrNumber: r["a.edm_drrnumber"],
+      role: r["edm_role@OData.Community.Display.V1.FormattedValue"]
+    }));
   }
-  window.needCheck = rows.sort((a, b) => a.name.localeCompare(b.name));
-  console.log(`3/3 Enabled approvers not in team: ${rows.length}`);
-  console.table(window.needCheck);
+
+  // No roles of your own: borrow active DRRs, with made-up roles and no stakeholder link.
+  async function borrowedRoles() {
+    const drrs = await fetchRows("edm_applicationrepository", `
+      <fetch top="${MAX}">
+        <entity name="edm_applicationrepository">
+          <attribute name="edm_applicationrepositoryid" /><attribute name="edm_drrnumber" />
+          <filter><condition attribute="statecode" operator="eq" value="0" /></filter>
+          <order attribute="edm_drrnumber" />
+        </entity>
+      </fetch>`);
+    return drrs.map((d, i) => ({ stakeholderId: null, drrId: d.edm_applicationrepositoryid, drrNumber: d.edm_drrnumber, role: FALLBACK_ROLES[i % FALLBACK_ROLES.length] }));
+  }
+
+  async function mine() {
+    return fetchRows("edm_drrattestation", `
+      <fetch>
+        <entity name="edm_drrattestation">
+          <attribute name="edm_drrattestationid" /><attribute name="edm_attestationkey" /><attribute name="edm_name" />
+          <filter>
+            <condition attribute="edm_cycle" operator="eq" value="${CYCLE}" />
+            <condition attribute="ownerid" operator="eq" value="${me()}" />
+          </filter>
+        </entity>
+      </fetch>`);
+  }
+
+  async function create() {
+    let roles = await myRoles();
+    if (!roles.length) {
+      roles = await borrowedRoles();
+      console.warn("You hold no DRR stakeholder roles here, so these items aren't linked to a stakeholder row. " +
+        "If attestation is switched on in this environment, the 07:00 follow-up flow will mark them Withdrawn the next morning.");
+    }
+    const have = new Set((await mine()).map(r => r.edm_attestationkey));
+    let made = 0;
+    for (const [i, r] of roles.entries()) {
+      const key = r.stakeholderId ? `${CYCLE}|${r.stakeholderId}` : `${CYCLE}|${r.drrId}|${r.role}`;
+      if (have.has(key)) continue;
+      // The last item is already past its due date, so the Overdue view has a row.
+      const overdue = roles.length > 1 && i === roles.length - 1;
+      const rec = {
+        edm_name: `${CYCLE} · ${r.drrNumber} · ${r.role}`,
+        edm_attestationkey: key,
+        edm_cycle: CYCLE,
+        edm_cyclestartdate: overdue ? day(-DEADLINE_DAYS - 1) : day(0),
+        edm_duedate: overdue ? day(-1) : day(DEADLINE_DAYS),
+        edm_role: r.role,
+        edm_attestationstatus: PENDING,
+        "edm_ApplicationRepository@odata.bind": `/edm_applicationrepositories(${r.drrId})`,
+        "edm_Attester@odata.bind": `/systemusers(${me()})`
+      };
+      if (r.stakeholderId) rec["edm_DRRStakeholder@odata.bind"] = `/edm_drrstakeholders(${r.stakeholderId})`;
+      try {
+        await Xrm.WebApi.createRecord("edm_drrattestation", rec);
+        made++;
+        console.log(`Created: ${rec.edm_name}${overdue ? " (overdue)" : ""}`);
+      } catch (e) {
+        console.error(`Couldn't create ${rec.edm_name}: ${e.message}`);
+      }
+    }
+    console.log(`${made} created, ${have.size} already there. Open DRR Governance › Attestation › My Attestations and refresh.`);
+  }
+
+  async function remove() {
+    const rows = await mine();
+    for (const r of rows) {
+      try {
+        await Xrm.WebApi.deleteRecord("edm_drrattestation", r.edm_drrattestationid);
+        console.log(`Deleted: ${r.edm_name}`);
+      } catch (e) {
+        // No Delete privilege: withdraw it so it drops out of the pending list.
+        await Xrm.WebApi.updateRecord("edm_drrattestation", r.edm_drrattestationid, { edm_attestationstatus: WITHDRAWN });
+        console.warn(`Couldn't delete ${r.edm_name} (${e.message}), marked it Withdrawn instead.`);
+      }
+    }
+    console.log(`${rows.length} demo item(s) cleaned up.`);
+  }
+
+  return { create, remove };
 })();
